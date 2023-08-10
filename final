@@ -1,0 +1,135 @@
+#include <iostream>
+#include <thread>
+#include <vector>
+#include <queue>
+#include <mutex>
+#include <future>
+
+using namespace std;
+
+// Задача, которую необходимо выполнить
+class Task {
+public:
+    Task() = default;
+    virtual ~Task() = default;
+    virtual void run() = 0;
+};
+
+// Задача, состоящая из нескольких подзадач
+class CompositeTask : public Task {
+public:
+    CompositeTask() = default;
+    virtual ~CompositeTask() = default;
+    virtual void add_subtask(shared_ptr<Task> task) = 0;
+};
+
+// Реализация задачи
+class SimpleTask : public Task {
+public:
+    SimpleTask() = default;
+    virtual ~SimpleTask() = default;
+    virtual void run() override {
+        cout << "SimpleTask executed" << endl;
+    }
+};
+
+// Реализация составной задачи
+class ParallelTask : public CompositeTask {
+public:
+    ParallelTask() {
+        p = promise<void>();
+        f = p.get_future();
+    }
+    virtual ~ParallelTask() = default;
+    virtual void add_subtask(shared_ptr<Task> task) override {
+        subtasks.push(task);
+    }
+    virtual void run() override {
+        vector<shared_ptr<thread>> threads;
+        while (!subtasks.empty()) {
+            threads.push_back(make_shared<thread>(&Task::run, subtasks.front()));
+            subtasks.pop();
+        }
+        for (auto& t : threads) {
+            t->join();
+        }
+        p.set_value();
+    }
+    future<void> get_future() {
+        return move(f);
+    }
+private:
+    queue<shared_ptr<Task>> subtasks;
+    promise<void> p;
+    future<void> f;
+};
+
+// Пул потоков
+class ThreadPool {
+public:
+    ThreadPool(int thread_count) : done(false) {
+        for (int i = 0; i < thread_count; ++i) {
+            threads.push_back(make_shared<thread>(&ThreadPool::worker, this));
+        }
+    }
+    ~ThreadPool() {
+        done = true;
+        for (auto& t : threads) {
+            t->join();
+        }
+    }
+    void add_task(shared_ptr<Task> task) {
+        tasks.push(task);
+    }
+private:
+    void worker() {
+        while (!done) {
+            shared_ptr<Task> task;
+            {
+                lock_guard<mutex> lock(m);
+                if (!tasks.empty()) {
+                    task = tasks.front();
+                    tasks.pop();
+                }
+            }
+            if (task) {
+                task->run();
+            } else {
+                this_thread::yield();
+            }
+        }
+    }
+    vector<shared_ptr<thread>> threads;
+    queue<shared_ptr<Task>> tasks;
+    mutex m;
+    bool done;
+};
+
+int main() {
+    // Создаем задачи и составные задачи
+    auto task1 = make_shared<SimpleTask>();
+    auto task2 = make_shared<SimpleTask>();
+    auto task3 = make_shared<SimpleTask>();
+    auto task4 = make_shared<ParallelTask>();
+    auto task5 = make_shared<SimpleTask>();
+    auto task6 = make_shared<SimpleTask>();
+    auto task7 = make_shared<ParallelTask>();
+
+    // Добавляем подзадачи к составной задаче
+    task4->add_subtask(task5);
+    task4->add_subtask(task6);
+    task7->add_subtask(task4);
+    task7->add_subtask(task7);
+
+    // Создаем пул потоков и добавляем задачи к пулу
+    ThreadPool pool(4);
+    pool.add_task(task1);
+    pool.add_task(task2);
+    pool.add_task(task3);
+    pool.add_task(task7);
+
+    // Ожидаем выполнения составной задачи
+    task7->get_future().wait();
+
+    return 0;
+}
